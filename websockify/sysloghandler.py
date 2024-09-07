@@ -44,7 +44,7 @@ class WebsockifySysLogHandler(handlers.SysLogHandler):
             self._legacy = True
             self._head_fmt = self._legacy_head_fmt
 
-        handlers.SysLogHandler.__init__(self, address, facility, socktype)
+        super().__init__(address, facility, socktype)
 
 
     def emit(self, record):
@@ -102,7 +102,7 @@ class WebsockifySysLogHandler(handlers.SysLogHandler):
             if self.unixsocket:
                 try:
                     self.socket.send(msg)
-                except socket.error:
+                except OSError:
                     self._connect_unixsocket(self.address)
                     self.socket.send(msg)
 

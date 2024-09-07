@@ -14,19 +14,7 @@ as taken from http://docs.python.org/dev/library/ssl.html#certificates
 
 import os, sys, time, errno, signal, socket, select, logging
 import multiprocessing
-
-# Imports that vary by python version
-
-# python 3.0 differences
-if sys.hexversion > 0x3000000:
-    s2b = lambda s: s.encode('latin_1')
-else:
-    s2b = lambda s: s      # No-op
-
-try:
-    from http.server import SimpleHTTPRequestHandler
-except ImportError:
-    from SimpleHTTPServer import SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler
 
 # Degraded functionality if these imports are missing
 for mod, msg in [('ssl', 'TLS/SSL/wss is disabled'),
@@ -41,12 +29,12 @@ if sys.platform == 'win32':
     # make sockets pickle-able/inheritable
     import multiprocessing.reduction
 
-from websockify.websocket import WebSocket, WebSocketWantReadError, WebSocketWantWriteError
+from websockify.websocket import WebSocketWantReadError, WebSocketWantWriteError
 from websockify.websocketserver import WebSocketRequestHandlerMixIn
 
-class CompatibleWebSocket(WebSocket):
+class CompatibleWebSocket(WebSocketRequestHandlerMixIn.SocketClass):
     def select_subprotocol(self, protocols):
-        # Handle old websockify clients that still specifiy a sub-protocol
+        # Handle old websockify clients that still specify a sub-protocol
         if 'binary' in protocols:
             return 'binary'
         else:
@@ -96,7 +84,7 @@ class WebSockifyRequestHandler(WebSocketRequestHandlerMixIn, SimpleHTTPRequestHa
         if self.logger is None:
             self.logger = WebSockifyServer.get_logger()
 
-        SimpleHTTPRequestHandler.__init__(self, req, addr, server)
+        super().__init__(req, addr, server)
 
     def log_message(self, format, *args):
         self.logger.info("%s - - [%s] %s" % (self.client_address[0], self.log_date_time_string(), format % args))
@@ -146,20 +134,14 @@ class WebSockifyRequestHandler(WebSocketRequestHandlerMixIn, SimpleHTTPRequestHa
                     self.rec.write("'{{{0}{{{1}',\n".format(tdelta, bufstr))
                 self.send_parts.append(buf)
 
-        # Flush any previously queued data
-        try:
-            self.request.sendmsg('')
-        except WebSocketWantWriteError:
-            return True
-
         while self.send_parts:
             # Send pending frames
-            buf = self.send_parts.pop(0)
             try:
-                self.request.sendmsg(buf)
+                self.request.sendmsg(self.send_parts[0])
             except WebSocketWantWriteError:
                 self.print_traffic("<.")
                 return True
+            self.send_parts.pop(0)
             self.print_traffic("<")
 
         return False
@@ -205,11 +187,11 @@ class WebSockifyRequestHandler(WebSocketRequestHandlerMixIn, SimpleHTTPRequestHa
         """ Send a WebSocket orderly close frame. """
         self.request.shutdown(socket.SHUT_RDWR, code, reason)
 
-    def send_pong(self, data=''.encode('ascii')):
+    def send_pong(self, data=b''):
         """ Send a WebSocket pong frame. """
         self.request.pong(data)
 
-    def send_ping(self, data=''.encode('ascii')):
+    def send_ping(self, data=b''):
         """ Send a WebSocket ping frame. """
         self.request.ping(data)
 
@@ -218,7 +200,7 @@ class WebSockifyRequestHandler(WebSocketRequestHandlerMixIn, SimpleHTTPRequestHa
         self.validate_connection()
         self.auth_connection()
 
-        WebSocketRequestHandlerMixIn.handle_upgrade(self)
+        super().handle_upgrade()
 
     def handle_websocket(self):
         # Indicate to server that a Websocket upgrade was done
@@ -268,15 +250,15 @@ class WebSockifyRequestHandler(WebSocketRequestHandlerMixIn, SimpleHTTPRequestHa
             self.auth_connection()
 
         if self.only_upgrade:
-            self.send_error(405, "Method Not Allowed")
+            self.send_error(405)
         else:
-            SimpleHTTPRequestHandler.do_GET(self)
+            super().do_GET()
 
     def list_directory(self, path):
         if self.file_only:
-            self.send_error(404, "No such file")
+            self.send_error(404)
         else:
-            return SimpleHTTPRequestHandler.list_directory(self, path)
+            return super().list_directory(path)
 
     def new_websocket_client(self):
         """ Do something with a WebSockets client connection. """
@@ -295,15 +277,15 @@ class WebSockifyRequestHandler(WebSocketRequestHandlerMixIn, SimpleHTTPRequestHa
             self.auth_connection()
 
         if self.only_upgrade:
-            self.send_error(405, "Method Not Allowed")
+            self.send_error(405)
         else:
-            SimpleHTTPRequestHandler.do_HEAD(self)
+            super().do_HEAD()
 
     def finish(self):
         if self.rec:
             self.rec.write("'EOF'];\n")
             self.rec.close()
-        SimpleHTTPRequestHandler.finish(self)
+        super().finish()
 
     def handle(self):
         # When using run_once, we have a single process, so
@@ -312,14 +294,14 @@ class WebSockifyRequestHandler(WebSocketRequestHandlerMixIn, SimpleHTTPRequestHa
         if self.run_once:
             self.handle_one_request()
         else:
-            SimpleHTTPRequestHandler.handle(self)
+            super().handle()
 
     def log_request(self, code='-', size='-'):
         if self.verbose:
-            SimpleHTTPRequestHandler.log_request(self, code, size)
+            super().log_request(code, size)
 
 
-class WebSockifyServer(object):
+class WebSockifyServer():
     """
     WebSockets server class.
     As an alternative, the standard library SocketServer can be used
@@ -343,37 +325,40 @@ class WebSockifyServer(object):
             file_only=False,
             run_once=False, timeout=0, idle_timeout=0, traffic=False,
             tcp_keepalive=True, tcp_keepcnt=None, tcp_keepidle=None,
-            tcp_keepintvl=None, ssl_ciphers=None, ssl_options=0):
+            tcp_keepintvl=None, ssl_ciphers=None, ssl_options=0,
+            unix_listen=None, unix_listen_mode=None):
 
         # settings
         self.RequestHandlerClass = RequestHandlerClass
-        self.verbose        = verbose
-        self.listen_fd      = listen_fd
-        self.listen_host    = listen_host
-        self.listen_port    = listen_port
-        self.prefer_ipv6    = source_is_ipv6
-        self.ssl_only       = ssl_only
-        self.ssl_ciphers    = ssl_ciphers
-        self.ssl_options    = ssl_options
-        self.verify_client  = verify_client
-        self.daemon         = daemon
-        self.run_once       = run_once
-        self.timeout        = timeout
-        self.idle_timeout   = idle_timeout
-        self.traffic        = traffic
-        self.file_only      = file_only
-        self.web_auth       = web_auth
+        self.verbose             = verbose
+        self.listen_fd           = listen_fd
+        self.unix_listen         = unix_listen
+        self.unix_listen_mode    = unix_listen_mode
+        self.listen_host         = listen_host
+        self.listen_port         = listen_port
+        self.prefer_ipv6         = source_is_ipv6
+        self.ssl_only            = ssl_only
+        self.ssl_ciphers         = ssl_ciphers
+        self.ssl_options         = ssl_options
+        self.verify_client       = verify_client
+        self.daemon              = daemon
+        self.run_once            = run_once
+        self.timeout             = timeout
+        self.idle_timeout        = idle_timeout
+        self.traffic             = traffic
+        self.file_only           = file_only
+        self.web_auth            = web_auth
 
-        self.launch_time    = time.time()
-        self.ws_connection  = False
-        self.handler_id     = 1
-        self.terminating    = False
+        self.launch_time         = time.time()
+        self.ws_connection       = False
+        self.handler_id          = 1
+        self.terminating         = False
 
-        self.logger         = self.get_logger()
-        self.tcp_keepalive  = tcp_keepalive
-        self.tcp_keepcnt    = tcp_keepcnt
-        self.tcp_keepidle   = tcp_keepidle
-        self.tcp_keepintvl  = tcp_keepintvl
+        self.logger              = self.get_logger()
+        self.tcp_keepalive       = tcp_keepalive
+        self.tcp_keepcnt         = tcp_keepcnt
+        self.tcp_keepidle        = tcp_keepidle
+        self.tcp_keepintvl       = tcp_keepintvl
 
         # keyfile path must be None if not specified
         self.key = None
@@ -405,6 +390,8 @@ class WebSockifyServer(object):
         self.msg("WebSocket server settings:")
         if self.listen_fd != None:
             self.msg("  - Listen for inetd connections")
+        elif self.unix_listen != None:
+            self.msg("  - Listen on unix socket %s", self.unix_listen)
         else:
             self.msg("  - Listen on %s:%s",
                     self.listen_host, self.listen_port)
@@ -439,8 +426,9 @@ class WebSockifyServer(object):
 
     @staticmethod
     def socket(host, port=None, connect=False, prefer_ipv6=False,
-               unix_socket=None, use_ssl=False, tcp_keepalive=True,
-               tcp_keepcnt=None, tcp_keepidle=None, tcp_keepintvl=None):
+               unix_socket=None, unix_socket_mode=None, unix_socket_listen=False,
+               use_ssl=False, tcp_keepalive=True, tcp_keepcnt=None, 
+               tcp_keepidle=None, tcp_keepintvl=None):
         """ Resolve a host (and optional port) to an IPv4 or IPv6
         address. Create a socket. Bind to it if listen is set,
         otherwise connect to it. Return the socket.
@@ -482,14 +470,29 @@ class WebSockifyServer(object):
             if connect:
                 sock.connect(addrs[0][4])
                 if use_ssl:
-                    sock = ssl.wrap_socket(sock)
+                    context = ssl.create_default_context()
+                    sock = context.wrap_socket(sock, server_hostname=host)
             else:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind(addrs[0][4])
                 sock.listen(100)
         else:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.connect(unix_socket)
+            if unix_socket_listen:
+                # Make sure the socket does not already exist
+                try:
+                    os.unlink(unix_socket)
+                except FileNotFoundError:
+                    pass
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                oldmask = os.umask(0o777 ^ unix_socket_mode)
+                try:
+                    sock.bind(unix_socket)
+                finally:
+                    os.umask(oldmask)
+                sock.listen(100)
+            else:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.connect(unix_socket)
 
         return sock
 
@@ -559,7 +562,7 @@ class WebSockifyServer(object):
         if not handshake:
             raise self.EClose("")
 
-        elif handshake[0] in ("\x16", "\x80", 22, 128):
+        elif handshake[0] in (22, 128):
             # SSL wrap the connection
             if not ssl:
                 raise self.EClose("SSL connection but no 'ssl' module")
@@ -568,32 +571,21 @@ class WebSockifyServer(object):
                                   % self.cert)
             retsock = None
             try:
-                if (hasattr(ssl, 'create_default_context') 
-                    and callable(ssl.create_default_context)):
-                    # create new-style SSL wrapping for extended features
-                    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-                    if self.ssl_ciphers is not None:
-                        context.set_ciphers(self.ssl_ciphers)
-                    context.options = self.ssl_options
-                    context.load_cert_chain(certfile=self.cert, keyfile=self.key, password=self.key_password)
-                    if self.verify_client:
-                        context.verify_mode = ssl.CERT_REQUIRED
-                        if self.cafile:
-                            context.load_verify_locations(cafile=self.cafile)
-                        else:
-                            context.set_default_verify_paths()
-                    retsock = context.wrap_socket(
-                            sock,
-                            server_side=True)
-                else:
-                    if self.verify_client:
-                        raise self.EClose("Client certificate verification requested, but this Python is too old.")
-                    # new-style SSL wrapping is not needed, using to old style
-                    retsock = ssl.wrap_socket(
-                            sock,
-                            server_side=True,
-                            certfile=self.cert,
-                            keyfile=self.key)
+                # create new-style SSL wrapping for extended features
+                context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+                if self.ssl_ciphers is not None:
+                    context.set_ciphers(self.ssl_ciphers)
+                context.options = self.ssl_options
+                context.load_cert_chain(certfile=self.cert, keyfile=self.key, password=self.key_password)
+                if self.verify_client:
+                    context.verify_mode = ssl.CERT_REQUIRED
+                    if self.cafile:
+                        context.load_verify_locations(cafile=self.cafile)
+                    else:
+                        context.set_default_verify_paths()
+                retsock = context.wrap_socket(
+                        sock,
+                        server_side=True)
             except ssl.SSLError:
                 _, x, _ = sys.exc_info()
                 if x.args[0] == ssl.SSL_ERROR_EOF:
@@ -727,19 +719,25 @@ class WebSockifyServer(object):
         be overridden) for each new client connection.
         """
 
-        if self.listen_fd != None:
-            lsock = socket.fromfd(self.listen_fd, socket.AF_INET, socket.SOCK_STREAM)
-            if sys.hexversion < 0x3000000:
-                # For python 2 we have to wrap the "raw" socket into a socket object,
-                # otherwise ssl wrap_socket doesn't work.
-                lsock = socket.socket(_sock=lsock)
-        else:
-            lsock = self.socket(self.listen_host, self.listen_port, False,
-                                self.prefer_ipv6,
-                                tcp_keepalive=self.tcp_keepalive,
-                                tcp_keepcnt=self.tcp_keepcnt,
-                                tcp_keepidle=self.tcp_keepidle,
-                                tcp_keepintvl=self.tcp_keepintvl)
+        try:
+            if self.listen_fd != None:
+                lsock = socket.fromfd(self.listen_fd, socket.AF_INET, socket.SOCK_STREAM)
+            elif self.unix_listen != None:
+                lsock = self.socket(host=None,
+                                    unix_socket=self.unix_listen,
+                                    unix_socket_mode=self.unix_listen_mode,
+                                    unix_socket_listen=True)
+            else:
+                lsock = self.socket(self.listen_host, self.listen_port, False,
+                                    self.prefer_ipv6,
+                                    tcp_keepalive=self.tcp_keepalive,
+                                    tcp_keepcnt=self.tcp_keepcnt,
+                                    tcp_keepidle=self.tcp_keepidle,
+                                    tcp_keepintvl=self.tcp_keepintvl)
+        except OSError as e:
+            self.msg("Openening socket failed: %s", str(e))
+            self.vmsg("exception", exc_info=True)
+            sys.exit()
 
         if self.daemon:
             keepfd = self.get_log_fd()
@@ -799,6 +797,9 @@ class WebSockifyServer(object):
                             ready = select.select([lsock], [], [], 1)[0]
                             if lsock in ready:
                                 startsock, address = lsock.accept()
+                                # Unix Socket will not report address (empty string), but address[0] is logged a bunch
+                                if self.unix_listen != None:
+                                    address = [ self.unix_listen ]
                             else:
                                 continue
                         except self.Terminate:

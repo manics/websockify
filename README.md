@@ -55,9 +55,15 @@ understand it. You can do this by installing it as accepted certificate, or by
 using that same certificate for a HTTPS connection to which you navigate first
 and approve. Browsers generally don't give you the "trust certificate?" prompt
 by opening a WSS socket with invalid certificate, hence you need to have it
-acccept it by either of those two methods.
+accept it by either of those two methods. 
 
-If you have a commercial/valid SSL certificate with one ore more intermediate
+The ports may be considered as distinguishing connections by the browser,
+for example, if your website url is https://my.local:8443 and your WebSocket 
+url is wss://my.local:8001, first browse to https://my.local:8001, add the 
+exception, then browse to https://my.local:8443 and add another exception.
+Then an html page served over :8443 will be able to open WSS to :8001
+
+If you have a commercial/valid SSL certificate with one or more intermediate
 certificates, concat them into one file, server certificate first, then the
 intermediate(s) from the CA, etc. Point to this file with the `--cert` option
 and then also to the key with `--key`. Finally, use `--ssl-only` as needed.
@@ -125,7 +131,7 @@ In addition to proxying from a source address to a target address
 launch a program on the local system and proxy WebSockets traffic to
 a normal TCP port owned/bound by the program.
 
-The is accomplished with a small LD_PRELOAD library (`rebind.so`)
+This is accomplished by the LD_PRELOAD library (`rebind.so`)
 which intercepts bind() system calls by the program. The specified
 port is moved to a new localhost/loopback free high port. websockify
 then proxies WebSockets traffic directed to the original port to the
@@ -159,12 +165,44 @@ project demonstrates a simple WebSockets based telnet client (use
 ### Installing websockify
 
 Download one of the releases or the latest development version, extract
-it and run `python setup.py install` as root in the directory where you
+it and run `python3 setup.py install` as root in the directory where you
 extracted the files. Normally, this will also install numpy for better
 performance, if you don't have it installed already. However, numpy is
 optional. If you don't want to install numpy or if you can't compile it,
 you can edit setup.py and remove the `install_requires=['numpy'],` line
-before running `python setup.py install`.
+before running `python3 setup.py install`.
 
 Afterwards, websockify should be available in your path. Run
 `websockify --help` to confirm it's installed correctly.
+
+
+### Running with Docker/Podman
+You can also run websockify using Docker, Podman, Singularity, udocker or
+your favourite container runtime that support OCI container images.
+
+The entrypoint of the image is the `run` command.
+
+To build the image:
+```
+./docker/build.sh
+```
+
+Once built you can just launch it with the same
+arguments you would give to the `run` command and taking care of
+assigning the port mappings:
+```
+docker run -it --rm -p <port>:<container_port> novnc/websockify <container_port> <run_arguments>
+```
+
+For example to forward traffic from local port 7000 to 10.1.1.1:5902
+you can use:
+```
+docker run -it --rm -p 7000:80 novnc/websockify 80 10.1.1.1:5902
+```
+
+If you need to include files, like for example for the `--web` or `--cert`
+options you can just mount the required files in the `/data` volume and then
+you can reference them in the usual way:
+```
+docker run -it --rm -p 443:443 -v websockify-data:/data novnc/websockify --cert /data/self.pem --web /data/noVNC :443 --token-plugin TokenRedis --token-source myredis.local:6379 --ssl-only --ssl-version tlsv1_2
+```
